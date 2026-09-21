@@ -42,10 +42,10 @@ export class CategoriesQueryDto {
     example: true,
   })
   @IsOptional()
-  @Transform(({ value }) => {
+  @Transform(({ value }: { value: unknown }): boolean | undefined => {
     if (value === 'true' || value === true) return true;
     if (value === 'false' || value === false) return false;
-    return value;
+    return undefined;
   })
   @IsBoolean()
   isActive?: boolean;

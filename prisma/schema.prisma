@@ -146,6 +146,7 @@ model CartItem {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  @@unique([cartId, productId])
   @@index([cartId])
   @@index([productId])
 }
@@ -192,8 +193,8 @@ model Order {
 
   items OrderItem[]
 
-  totalAmount Float
-  status      OrderStatus @default(PENDING)
+  totalAmountInCents Int
+  status             OrderStatus @default(PENDING)
 
   payment Payment?
 
@@ -219,9 +220,9 @@ model OrderItem {
   productName String
   sku         String
 
-  quantity   Int
-  unitPrice  Float
-  totalPrice Float
+  quantity          Int
+  unitPriceInCents  Int
+  totalPriceInCents Int
 
   createdAt DateTime @default(now())
 
@@ -235,10 +236,10 @@ model Payment {
   orderId String @unique @db.ObjectId
   order   Order  @relation(fields: [orderId], references: [id])
 
-  amount Float
-  status PaymentStatus @default(PENDING)
+  amountInCents Int
+  status        PaymentStatus @default(PENDING)
 
-  transactionId String?
+  transactionId String? @unique
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

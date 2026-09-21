@@ -21,7 +21,7 @@ import { CartModule } from './modules/cart/cart.module';
 import { InventoryModule } from './modules/inventory/inventory.module';
 import { OrdersModule } from './modules/orders/orders.module';
 import { PaymentsModule } from './modules/payments/payments.module';
-import { FulfillmentModule } from './modules/fulfillment/fulfillment.module';
+// import { FulfillmentModule } from './modules/fulfillment/fulfillment.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
 import { AnalyticsModule } from './modules/analytics/analytics.module';
 import { CategoriesModule } from './modules/categories/categories.module';
@@ -70,7 +70,6 @@ import { HealthModule } from './modules/health/health.module';
     InventoryModule,
     OrdersModule,
     PaymentsModule,
-    FulfillmentModule,
     NotificationsModule,
     AnalyticsModule,
     CategoriesModule,

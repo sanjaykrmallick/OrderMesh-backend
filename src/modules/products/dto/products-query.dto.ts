@@ -51,7 +51,7 @@ export class ProductsQueryDto {
     example: true,
   })
   @IsOptional()
-  @Transform(({ value }) => {
+  @Transform(({ value }: { value: unknown }): boolean | undefined => {
     if (value === 'true' || value === true) {
       return true;
     }
@@ -60,7 +60,7 @@ export class ProductsQueryDto {
       return false;
     }
 
-    return value;
+    return undefined;
   })
   @IsBoolean()
   isActive?: boolean;

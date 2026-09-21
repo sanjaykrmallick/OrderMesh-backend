@@ -5,7 +5,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 
-import { InventoryAdjustmentType, Prisma } from '@prisma/client';
+import { Prisma } from '@prisma/client';
 
 import { PrismaService } from '../../database/prisma.service';
 
@@ -378,5 +378,65 @@ export class InventoryService {
         status: this.getStatus(inventory.availableQuantity),
       },
     });
+  }
+
+  async reserveWithinTransaction(
+    tx: Prisma.TransactionClient,
+    productId: string,
+    quantity: number,
+  ) {
+    const result = await tx.inventory.updateMany({
+      where: {
+        productId,
+
+        availableQuantity: {
+          gte: quantity,
+        },
+      },
+
+      data: {
+        availableQuantity: {
+          decrement: quantity,
+        },
+
+        reservedQuantity: {
+          increment: quantity,
+        },
+      },
+    });
+
+    if (result.count === 0) {
+      throw new ConflictException('Insufficient inventory');
+    }
+  }
+
+  async releaseWithinTransaction(
+    tx: Prisma.TransactionClient,
+    productId: string,
+    quantity: number,
+  ) {
+    const result = await tx.inventory.updateMany({
+      where: {
+        productId,
+
+        reservedQuantity: {
+          gte: quantity,
+        },
+      },
+
+      data: {
+        reservedQuantity: {
+          decrement: quantity,
+        },
+
+        availableQuantity: {
+          increment: quantity,
+        },
+      },
+    });
+
+    if (result.count === 0) {
+      throw new ConflictException('Insufficient reserved inventory');
+    }
   }
 }
