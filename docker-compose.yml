@@ -1,0 +1,35 @@
+services:
+  mongodb:
+    image: mongo:8
+    container_name: ordermesh-mongodb
+    restart: unless-stopped
+    command: ['mongod', '--replSet', 'rs0', '--bind_ip_all']
+    ports:
+      - '27017:27017'
+    healthcheck:
+      test:
+        ['CMD', 'mongosh', '--quiet', '--eval', "db.adminCommand('ping').ok"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    environment:
+      MONGO_INITDB_DATABASE: ordermesh
+    volumes:
+      - mongodb_data:/data/db
+
+  mongodb-init:
+    image: mongo:8
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    restart: 'no'
+    command:
+      [
+        'mongosh',
+        'mongodb://mongodb:27017/admin',
+        '--eval',
+        "try { rs.status() } catch (e) { rs.initiate({_id: 'rs0', members: [{_id: 0, host: 'localhost:27017'}]}) }",
+      ]
+
+volumes:
+  mongodb_data:
