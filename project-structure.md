@@ -54,6 +54,12 @@ order-fulfillment-platform/
 │ │ ├── inventory.service.ts
 │ │ └── dto/
 │ │
+│ ├── /categories
+│ │ ├── categories.module.ts
+│ │ ├── categories.controller.ts
+│ │ ├── categories.service.ts
+│ │ └── dto/
+│ │
 │ ├── orders/
 │ │ ├── orders.module.ts
 │ │ ├── orders.controller.ts
@@ -94,3 +100,21 @@ order-fulfillment-platform/
 ├── nest-cli.json
 ├── tsconfig.json
 └── package.json
+
+# API authorization
+
+The final authorization model is:
+
+API--------------Customer---Warehouse---Operations---Admin
+GET Categories------✅-------✅-----------✅-------✅
+POST Category-------❌-------❌-----------❌-------✅
+PATCH Category------❌-------❌-----------❌-------✅
+DELETE Category-----❌-------❌-----------❌-------✅
+GET Products--------✅-------✅-----------✅-------✅
+POST Product--------❌-------❌-----------✅-------✅
+PATCH Product-------❌-------❌-----------✅-------✅
+DELETE Product------❌-------❌-----------✅-------✅
+GET Inventory-------❌-------✅-----------✅-------✅
+Adjust Inventory----❌-------✅-----------✅-------✅
+Reserve Inventory---❌-------❌-----------✅-------✅
+Release Inventory---❌-------❌-----------✅-------✅

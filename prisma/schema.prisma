@@ -39,6 +39,14 @@ enum InventoryStatus {
   OUT_OF_STOCK
 }
 
+enum InventoryAdjustmentType {
+  RESTOCK
+  DAMAGE
+  CORRECTION
+  RETURN
+  MANUAL
+}
+
 model User {
   id           String   @id @default(auto()) @map("_id") @db.ObjectId
   email        String   @unique
@@ -62,22 +70,52 @@ model User {
   @@index([createdAt])
 }
 
-model Product {
+model Category {
   id          String  @id @default(auto()) @map("_id") @db.ObjectId
-  sku         String  @unique
   name        String
+  slug        String  @unique
   description String?
-  price       Float
-  category    String?
-  imageUrl    String?
   isActive    Boolean @default(true)
 
-  cartItems  CartItem[]
-  orderItems OrderItem[]
-  inventory  Inventory?
+  products Product[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  @@index([name])
+  @@index([isActive])
+  @@index([createdAt])
+}
+
+model Product {
+  id String @id @default(auto()) @map("_id") @db.ObjectId
+
+  sku         String  @unique
+  name        String
+  slug        String  @unique
+  description String?
+
+  priceInCents Int
+
+  imageUrl String?
+
+  isActive Boolean @default(true)
+
+  categoryId String   @db.ObjectId
+  category   Category @relation(fields: [categoryId], references: [id])
+
+  cartItems  CartItem[]
+  orderItems OrderItem[]
+
+  inventory Inventory?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([categoryId])
+  @@index([isActive])
+  @@index([name])
+  @@index([createdAt])
 }
 
 model Cart {
@@ -118,11 +156,30 @@ model Inventory {
   productId String  @unique @db.ObjectId
   product   Product @relation(fields: [productId], references: [id])
 
-  quantity Int             @default(0)
-  reserved Int             @default(0)
-  status   InventoryStatus @default(AVAILABLE)
+  availableQuantity Int @default(0)
+  reservedQuantity  Int @default(0)
 
+  status InventoryStatus @default(AVAILABLE)
+
+  createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+}
+
+model InventoryAdjustment {
+  id String @id @default(auto()) @map("_id") @db.ObjectId
+
+  productId String @db.ObjectId
+
+  quantity Int
+
+  type InventoryAdjustmentType
+
+  reason String?
+
+  createdAt DateTime @default(now())
+
+  @@index([productId])
+  @@index([createdAt])
 }
 
 model Order {

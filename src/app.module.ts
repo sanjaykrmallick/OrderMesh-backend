@@ -24,6 +24,7 @@ import { PaymentsModule } from './modules/payments/payments.module';
 import { FulfillmentModule } from './modules/fulfillment/fulfillment.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
 import { AnalyticsModule } from './modules/analytics/analytics.module';
+import { CategoriesModule } from './modules/categories/categories.module';
 import { HealthModule } from './modules/health/health.module';
 
 @Module({
@@ -72,6 +73,7 @@ import { HealthModule } from './modules/health/health.module';
     FulfillmentModule,
     NotificationsModule,
     AnalyticsModule,
+    CategoriesModule,
   ],
 
   providers: [
