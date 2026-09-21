@@ -6,6 +6,7 @@ import { DatabaseModule } from '../../database/database.module';
 
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
+
 import { JwtStrategy } from './strategies/jwt.strategy';
 import { RolesGuard } from './guards/roles.guard';
 
@@ -13,16 +14,18 @@ import { RolesGuard } from './guards/roles.guard';
   imports: [
     DatabaseModule,
 
+    ConfigModule,
+
     JwtModule.registerAsync({
       imports: [ConfigModule],
 
       inject: [ConfigService],
 
       useFactory: (configService: ConfigService) => ({
-        secret: configService.getOrThrow<string>('jwt.secret'),
+        secret: configService.getOrThrow<string>('jwt.accessSecret'),
 
         signOptions: {
-          expiresIn: configService.getOrThrow('jwt.expiresIn'),
+          expiresIn: configService.getOrThrow('jwt.accessExpiresIn'),
         },
       }),
     }),

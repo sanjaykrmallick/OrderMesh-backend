@@ -1,11 +1,16 @@
 import { ValidationPipe } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
+import { Logger } from 'nestjs-pino';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 
 import { AppModule } from './app.module';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create(AppModule, {
+    bufferLogs: true,
+  });
+
+  app.useLogger(app.get(Logger));
 
   app.setGlobalPrefix('api');
 
@@ -19,17 +24,14 @@ async function bootstrap() {
 
   // Swagger
   const config = new DocumentBuilder()
-    .setTitle('Order & Fulfillment Platform API')
-    .setDescription(
-      'REST API for the cloud-native Order & Fulfillment Platform',
-    )
-    .setVersion('1.0')
+    .setTitle('OrderMesh Order & Fulfillment API')
+    .setDescription('REST API for OrderMesh')
+    .setVersion('1.0.0')
     .addBearerAuth(
       {
         type: 'http',
         scheme: 'bearer',
         bearerFormat: 'JWT',
-        description: 'Enter JWT token',
       },
       'access-token',
     )

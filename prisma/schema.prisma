@@ -49,6 +49,8 @@ model User {
   isActive     Boolean  @default(true)
   role         UserRole @default(CUSTOMER)
 
+  refreshTokenHash String?
+
   carts  Cart[]
   orders Order[]
 

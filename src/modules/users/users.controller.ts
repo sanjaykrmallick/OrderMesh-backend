@@ -6,7 +6,7 @@ import {
   Param,
   Patch,
   Query,
-  UseGuards,
+  Req,
 } from '@nestjs/common';
 
 import {
@@ -17,8 +17,6 @@ import {
 } from '@nestjs/swagger';
 
 import { UserRole } from '@prisma/client';
-
-import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 
 import { Roles } from '../auth/decorators/roles.decorator';
 import { RolesGuard } from '../auth/guards/roles.guard';
@@ -32,7 +30,6 @@ import { UsersQueryDto } from './dto/users-query.dto';
 @ApiTags('Users')
 @ApiBearerAuth('access-token')
 @Controller('users')
-@UseGuards(JwtAuthGuard)
 export class UsersController {
   constructor(private readonly usersService: UsersService) {}
 
@@ -59,10 +56,20 @@ export class UsersController {
   }
 
   /**
+   * DELETE /api/users/me
+   */
+  @Delete('me')
+  @ApiOperation({
+    summary: 'Deactivate current account',
+  })
+  deactivateMe(@Req() req: any) {
+    return this.usersService.deactivateUser(req.user.userId);
+  }
+
+  /**
    * GET /api/users
    */
   @Get()
-  @UseGuards(RolesGuard)
   @Roles(UserRole.ADMIN, UserRole.OPERATIONS)
   @ApiOperation({
     summary: 'Get users',
@@ -75,7 +82,6 @@ export class UsersController {
    * GET /api/users/:id
    */
   @Get(':id')
-  @UseGuards(RolesGuard)
   @Roles(UserRole.ADMIN, UserRole.OPERATIONS)
   @ApiOperation({
     summary: 'Get user by ID',
@@ -88,7 +94,6 @@ export class UsersController {
    * PATCH /api/users/:id
    */
   @Patch(':id')
-  @UseGuards(RolesGuard)
   @Roles(UserRole.ADMIN)
   @ApiOperation({
     summary: 'Update user',
@@ -106,7 +111,6 @@ export class UsersController {
    * DELETE /api/users/:id
    */
   @Delete(':id')
-  @UseGuards(RolesGuard)
   @Roles(UserRole.ADMIN)
   @ApiOperation({
     summary: 'Deactivate user',

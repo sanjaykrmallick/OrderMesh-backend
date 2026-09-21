@@ -1,9 +1,16 @@
 import { Module } from '@nestjs/common';
+import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
+import { APP_GUARD } from '@nestjs/core';
 
 import { ConfigModule } from '@nestjs/config';
 
+import { LoggerModule } from 'nestjs-pino';
+
 import configuration from './config/configuration';
 import { validationSchema } from './config/validation';
+
+import { JwtAuthGuard } from './modules/auth/guards/jwt-auth.guard';
+import { RolesGuard } from './modules/auth/guards/roles.guard';
 
 import { DatabaseModule } from './database/database.module';
 
@@ -27,6 +34,31 @@ import { HealthModule } from './modules/health/health.module';
       load: [configuration],
       validationSchema,
     }),
+    ThrottlerModule.forRoot([
+      {
+        name: 'short',
+        ttl: 60_000,
+        limit: 30,
+      },
+    ]),
+    LoggerModule.forRoot({
+      pinoHttp: {
+        level: process.env.NODE_ENV === 'production' ? 'info' : 'debug',
+
+        transport:
+          process.env.NODE_ENV !== 'production'
+            ? {
+                target: 'pino-pretty',
+
+                options: {
+                  singleLine: true,
+                },
+              }
+            : undefined,
+
+        redact: ['req.headers.authorization', 'req.headers.cookie'],
+      },
+    }),
     DatabaseModule,
     HealthModule,
 
@@ -40,6 +72,22 @@ import { HealthModule } from './modules/health/health.module';
     FulfillmentModule,
     NotificationsModule,
     AnalyticsModule,
+  ],
+
+  providers: [
+    {
+      provide: APP_GUARD,
+      useClass: ThrottlerGuard,
+    },
+    {
+      provide: APP_GUARD,
+      useClass: JwtAuthGuard,
+    },
+
+    {
+      provide: APP_GUARD,
+      useClass: RolesGuard,
+    },
   ],
 })
 export class AppModule {}
