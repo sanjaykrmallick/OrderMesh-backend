@@ -69,6 +69,48 @@ enum PaymentWebhookEventStatus {
   FAILED
 }
 
+enum NotificationType {
+  ORDER_CREATED
+  PAYMENT_SUCCESS
+  PAYMENT_FAILED
+  ORDER_PROCESSING
+  ORDER_PACKED
+  ORDER_SHIPPED
+  ORDER_DELIVERED
+  ORDER_CANCELLED
+  INVENTORY_ALERT
+  SYSTEM
+}
+
+enum NotificationChannel {
+  IN_APP
+  EMAIL
+  SMS
+  PUSH
+}
+
+enum NotificationStatus {
+  UNREAD
+  READ
+}
+
+enum AnalyticsEventType {
+  USER_REGISTERED
+  PRODUCT_VIEWED
+  CART_CREATED
+  CART_ITEM_ADDED
+  ORDER_CREATED
+  PAYMENT_SUCCEEDED
+  PAYMENT_FAILED
+  ORDER_CANCELLED
+  ORDER_PROCESSING
+  ORDER_PACKED
+  ORDER_SHIPPED
+  ORDER_DELIVERED
+  INVENTORY_RESERVED
+  INVENTORY_RELEASED
+}
+
 model User {
   id           String   @id @default(auto()) @map("_id") @db.ObjectId
   email        String   @unique
@@ -334,4 +376,90 @@ model PaymentWebhookEvent {
   @@index([providerPaymentId])
   @@index([provider, providerPaymentId])
   @@index([createdAt])
+}
+
+model Notification {
+  id String @id @default(auto()) @map("_id") @db.ObjectId
+
+  userId String @db.ObjectId
+
+  type NotificationType
+
+  channel NotificationChannel @default(IN_APP)
+
+  status NotificationStatus @default(UNREAD)
+
+  title String
+
+  message String
+
+  entityType String?
+  entityId   String?
+
+  metadata Json?
+
+  readAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+  @@index([userId, status])
+  @@index([userId, createdAt])
+  @@index([type])
+  @@index([entityType, entityId])
+  @@index([createdAt])
+}
+
+model AnalyticsEvent {
+  id String @id @default(auto()) @map("_id") @db.ObjectId
+
+  type AnalyticsEventType
+
+  userId String? @db.ObjectId
+
+  orderId String? @db.ObjectId
+
+  productId String? @db.ObjectId
+
+  amountInCents Int?
+
+  quantity Int?
+
+  metadata Json?
+
+  occurredAt DateTime @default(now())
+
+  createdAt DateTime @default(now())
+
+  @@index([type])
+  @@index([userId])
+  @@index([orderId])
+  @@index([productId])
+  @@index([occurredAt])
+  @@index([type, occurredAt])
+}
+
+model DailyAnalytics {
+  id String @id @default(auto()) @map("_id") @db.ObjectId
+
+  date DateTime @unique
+
+  totalOrders Int @default(0)
+
+  successfulOrders Int @default(0)
+
+  cancelledOrders Int @default(0)
+
+  totalRevenueInCents Int @default(0)
+
+  totalPaymentsFailed Int @default(0)
+
+  totalProductsSold Int @default(0)
+
+  totalUsersRegistered Int @default(0)
+
+  createdAt DateTime @default(now())
+
+  updatedAt DateTime @updatedAt
 }

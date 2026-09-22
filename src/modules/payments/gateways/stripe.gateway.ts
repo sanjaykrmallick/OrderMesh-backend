@@ -29,22 +29,16 @@ export class StripeGateway implements PaymentGateway {
     const paymentIntent = await this.stripe.paymentIntents.create(
       {
         amount: params.amountInCents,
-
         currency: params.currency,
-
         automatic_payment_methods: {
           enabled: true,
         },
 
         receipt_email: params.customerEmail,
-
         metadata: {
           orderId: params.orderId,
-
           paymentId: params.paymentId,
-
           attemptId: params.attemptId,
-
           ...(params.metadata ?? {}),
         },
       },
@@ -56,18 +50,14 @@ export class StripeGateway implements PaymentGateway {
 
     return {
       providerPaymentId: paymentIntent.id,
-
       clientSecret: paymentIntent.client_secret ?? undefined,
-
       status: this.mapPaymentIntentStatus(paymentIntent.status),
-
       raw: paymentIntent,
     };
   }
 
   async parseWebhook(
     payload: Buffer,
-
     signature: string,
   ): Promise<PaymentWebhookResult> {
     let event: Stripe.Event;
@@ -75,9 +65,7 @@ export class StripeGateway implements PaymentGateway {
     try {
       event = this.stripe.webhooks.constructEvent(
         payload,
-
         signature,
-
         process.env.STRIPE_WEBHOOK_SECRET!,
       );
     } catch {
@@ -88,17 +76,11 @@ export class StripeGateway implements PaymentGateway {
 
     return {
       providerPaymentId: paymentIntent.id,
-
       eventId: event.id,
-
       eventType: event.type,
-
       status: this.mapWebhookStatus(event),
-
       failureCode: paymentIntent.last_payment_error?.code,
-
       failureMessage: paymentIntent.last_payment_error?.message,
-
       raw: event,
     };
   }

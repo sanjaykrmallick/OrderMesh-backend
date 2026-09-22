@@ -12,27 +12,30 @@ import {
   Prisma,
 } from '@prisma/client';
 
+import { EventEmitter2 } from '@nestjs/event-emitter';
+import { EVENTS } from '../../common/events/events.constants';
+
 import { PrismaService } from '../../database/prisma.service';
 
 import { InventoryService } from '../inventory/inventory.service';
 
 import { StripeGateway } from './gateways/stripe.gateway';
+
 import {
   PaymentGateway,
   PaymentWebhookResult,
 } from './gateways/payment-gateway.interface';
+
 import { PaymentWebhookEventService } from './webhooks/payment-webhook-event.service';
 
 @Injectable()
 export class PaymentsService {
   constructor(
     private readonly prisma: PrismaService,
-
     private readonly inventoryService: InventoryService,
-
     private readonly stripeGateway: StripeGateway,
-
     private readonly webhookEventService: PaymentWebhookEventService,
+    private readonly eventEmitter: EventEmitter2,
   ) {}
 
   /**
@@ -59,16 +62,13 @@ export class PaymentsService {
    */
   async initializePayment(
     orderId: string,
-
     paymentId: string,
-
     attemptId: string,
   ) {
     const attempt = await this.prisma.paymentAttempt.findUnique({
       where: {
         id: attemptId,
       },
-
       include: {
         payment: {
           include: {
@@ -96,13 +96,9 @@ export class PaymentsService {
     if (attempt.providerPaymentId) {
       return {
         paymentAttemptId: attempt.id,
-
         provider: attempt.provider,
-
         providerPaymentId: attempt.providerPaymentId,
-
         clientSecret: this.getClientSecretFromMetadata(attempt.metadata),
-
         status: attempt.status,
       };
     }
@@ -111,24 +107,15 @@ export class PaymentsService {
 
     const result = await gateway.createPayment({
       amountInCents: attempt.amountInCents,
-
       currency: process.env.STRIPE_CURRENCY ?? 'inr',
-
       orderId,
-
       paymentId,
-
       attemptId,
-
       customerEmail: attempt.payment.order.user.email,
-
       idempotencyKey: attempt.idempotencyKey,
-
       metadata: {
         orderId,
-
         paymentId,
-
         attemptId,
       },
     });
@@ -144,7 +131,6 @@ export class PaymentsService {
 
       data: {
         providerPaymentId: result.providerPaymentId,
-
         status:
           result.status === 'SUCCEEDED'
             ? PaymentAttemptStatus.SUCCEEDED
@@ -160,13 +146,9 @@ export class PaymentsService {
 
     return {
       paymentAttemptId: updatedAttempt.id,
-
       provider: updatedAttempt.provider,
-
       providerPaymentId: updatedAttempt.providerPaymentId,
-
       clientSecret: result.clientSecret,
-
       status: updatedAttempt.status,
     };
   }
@@ -174,35 +156,21 @@ export class PaymentsService {
   /**
    * Stripe webhook.
    */
-  async handleStripeWebhook(
-    payload: Buffer,
-
-    signature: string,
-  ) {
-    const result = await this.stripeGateway.parseWebhook(
-      payload,
-
-      signature,
-    );
+  async handleStripeWebhook(payload: Buffer, signature: string) {
+    const result = await this.stripeGateway.parseWebhook(payload, signature);
 
     const webhookEvent = await this.webhookEventService.createIfNotExists({
       provider: PaymentProvider.STRIPE,
-
       eventId: result.eventId,
-
       eventType: result.eventType,
-
       providerPaymentId: result.providerPaymentId,
-
       payload: result.raw as Prisma.InputJsonValue,
     });
 
     if (webhookEvent.event && webhookEvent.event.status === 'PROCESSED') {
       return {
         received: true,
-
         duplicate: true,
-
         status: 'already_processed',
       };
     }
@@ -210,9 +178,7 @@ export class PaymentsService {
     if (webhookEvent.event && webhookEvent.event.status === 'PROCESSING') {
       return {
         received: true,
-
         duplicate: true,
-
         status: 'processing',
       };
     }
@@ -222,9 +188,7 @@ export class PaymentsService {
     if (!claimed) {
       return {
         received: true,
-
         duplicate: true,
-
         status: 'already_claimed',
       };
     }
@@ -232,7 +196,6 @@ export class PaymentsService {
     try {
       const response = await this.processWebhook(
         PaymentProvider.STRIPE,
-
         result,
       );
 
@@ -240,11 +203,7 @@ export class PaymentsService {
 
       return response;
     } catch (error) {
-      await this.webhookEventService.markFailed(
-        result.eventId,
-
-        error,
-      );
+      await this.webhookEventService.markFailed(result.eventId, error);
 
       throw error;
     }
@@ -255,17 +214,15 @@ export class PaymentsService {
    */
   private async processWebhook(
     provider: PaymentProvider,
-
     result: PaymentWebhookResult,
   ) {
-    return this.prisma.$transaction(async (tx) => {
+    const transactionResult = await this.prisma.$transaction(async (tx) => {
       /**
        * Find payment attempt.
        */
       const attempt = await tx.paymentAttempt.findFirst({
         where: {
           provider,
-
           providerPaymentId: result.providerPaymentId,
         },
 
@@ -289,7 +246,6 @@ export class PaymentsService {
       if (attempt.status === PaymentAttemptStatus.SUCCEEDED) {
         return {
           received: true,
-
           alreadyProcessed: true,
         };
       }
@@ -303,11 +259,9 @@ export class PaymentsService {
         const updateResult = await tx.paymentAttempt.updateMany({
           where: {
             id: attempt.id,
-
             status: {
               in: [
                 PaymentAttemptStatus.CREATED,
-
                 PaymentAttemptStatus.PROCESSING,
               ],
             },
@@ -315,7 +269,6 @@ export class PaymentsService {
 
           data: {
             status: PaymentAttemptStatus.PROCESSING,
-
             lastWebhookEventId: result.eventId,
           },
         });
@@ -323,14 +276,12 @@ export class PaymentsService {
         if (updateResult.count === 0) {
           return {
             received: true,
-
             concurrentUpdate: true,
           };
         }
 
         return {
           received: true,
-
           status: 'PROCESSING',
         };
       }
@@ -344,11 +295,9 @@ export class PaymentsService {
         const updateResult = await tx.paymentAttempt.updateMany({
           where: {
             id: attempt.id,
-
             status: {
               in: [
                 PaymentAttemptStatus.CREATED,
-
                 PaymentAttemptStatus.PROCESSING,
               ],
             },
@@ -356,7 +305,6 @@ export class PaymentsService {
 
           data: {
             status: PaymentAttemptStatus.SUCCEEDED,
-
             lastWebhookEventId: result.eventId,
           },
         });
@@ -364,7 +312,6 @@ export class PaymentsService {
         if (updateResult.count === 0) {
           return {
             received: true,
-
             concurrentUpdate: true,
           };
         }
@@ -391,8 +338,17 @@ export class PaymentsService {
 
         return {
           received: true,
-
           status: 'SUCCESS',
+          eventType: EVENTS.PAYMENT_SUCCEEDED,
+          event: {
+            orderId: attempt.payment.orderId,
+            userId: attempt.payment.order.userId,
+            paymentId: attempt.paymentId,
+            paymentAttemptId: attempt.id,
+            amountInCents: attempt.amountInCents,
+            provider,
+            providerPaymentId: attempt.providerPaymentId ?? undefined,
+          },
         };
       }
 
@@ -405,11 +361,9 @@ export class PaymentsService {
         const updateResult = await tx.paymentAttempt.updateMany({
           where: {
             id: attempt.id,
-
             status: {
               in: [
                 PaymentAttemptStatus.CREATED,
-
                 PaymentAttemptStatus.PROCESSING,
               ],
             },
@@ -417,11 +371,8 @@ export class PaymentsService {
 
           data: {
             status: PaymentAttemptStatus.FAILED,
-
             lastWebhookEventId: result.eventId,
-
             failureCode: result.failureCode,
-
             failureMessage: result.failureMessage,
           },
         });
@@ -429,7 +380,6 @@ export class PaymentsService {
         if (updateResult.count === 0) {
           return {
             received: true,
-
             concurrentUpdate: true,
           };
         }
@@ -437,9 +387,7 @@ export class PaymentsService {
         for (const item of attempt.payment.order.items) {
           await this.inventoryService.releaseWithinTransaction(
             tx,
-
             item.productId,
-
             item.quantity,
           );
         }
@@ -466,8 +414,20 @@ export class PaymentsService {
 
         return {
           received: true,
-
           status: 'FAILED',
+          eventType: EVENTS.PAYMENT_FAILED,
+
+          event: {
+            orderId: attempt.payment.orderId,
+            userId: attempt.payment.order.userId,
+            paymentId: attempt.paymentId,
+            paymentAttemptId: attempt.id,
+            amountInCents: attempt.amountInCents,
+            provider,
+            providerPaymentId: attempt.providerPaymentId ?? undefined,
+            failureCode: result.failureCode,
+            failureMessage: result.failureMessage,
+          },
         };
       }
 
@@ -480,11 +440,9 @@ export class PaymentsService {
         const updateResult = await tx.paymentAttempt.updateMany({
           where: {
             id: attempt.id,
-
             status: {
               in: [
                 PaymentAttemptStatus.CREATED,
-
                 PaymentAttemptStatus.PROCESSING,
               ],
             },
@@ -492,7 +450,6 @@ export class PaymentsService {
 
           data: {
             status: PaymentAttemptStatus.CANCELLED,
-
             lastWebhookEventId: result.eventId,
           },
         });
@@ -500,7 +457,6 @@ export class PaymentsService {
         if (updateResult.count === 0) {
           return {
             received: true,
-
             concurrentUpdate: true,
           };
         }
@@ -511,9 +467,7 @@ export class PaymentsService {
         for (const item of attempt.payment.order.items) {
           await this.inventoryService.releaseWithinTransaction(
             tx,
-
             item.productId,
-
             item.quantity,
           );
         }
@@ -540,17 +494,24 @@ export class PaymentsService {
 
         return {
           received: true,
-
           status: 'CANCELLED',
         };
       }
 
       return {
         received: true,
-
         ignored: true,
       };
     });
+
+    if (transactionResult.event) {
+      this.eventEmitter.emit(
+        transactionResult.eventType,
+        transactionResult.event,
+      );
+    }
+
+    return transactionResult;
   }
 
   /**

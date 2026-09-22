@@ -12,31 +12,26 @@ import {
   Prisma,
 } from '@prisma/client';
 
+import { EventEmitter2 } from '@nestjs/event-emitter';
+
 import { PrismaService } from '../../database/prisma.service';
-
 import { InventoryService } from '../inventory/inventory.service';
-
 import { PaymentsService } from '../payments/payments.service';
 
 import { CheckoutDto } from './dto/checkout.dto';
-
 import { OrdersQueryDto } from './dto/orders-query.dto';
+import { EVENTS } from '../../common/events/events.constants';
 
 @Injectable()
 export class OrdersService {
   constructor(
     private readonly prisma: PrismaService,
-
     private readonly inventoryService: InventoryService,
-
     private readonly paymentsService: PaymentsService,
+    private readonly eventEmitter: EventEmitter2,
   ) {}
 
-  async checkout(
-    userId: string,
-
-    dto: CheckoutDto,
-  ) {
+  async checkout(userId: string, dto: CheckoutDto) {
     /**
      * Find cart first.
      */
@@ -179,9 +174,7 @@ export class OrdersService {
       for (const item of currentCart.items) {
         await this.inventoryService.reserveWithinTransaction(
           tx,
-
           item.productId,
-
           item.quantity,
         );
       }
@@ -192,27 +185,17 @@ export class OrdersService {
       const order = await tx.order.create({
         data: {
           orderNumber,
-
           userId,
-
           totalAmountInCents: transactionTotal,
-
           status: OrderStatus.PAYMENT_PENDING,
-
           shippingAddress: dto.shippingAddress,
-
           items: {
             create: currentCart.items.map((item) => ({
               productId: item.productId,
-
               productName: item.product.name,
-
               sku: item.product.sku,
-
               quantity: item.quantity,
-
               unitPriceInCents: item.product.priceInCents,
-
               totalPriceInCents: item.quantity * item.product.priceInCents,
             })),
           },
@@ -229,9 +212,7 @@ export class OrdersService {
       const payment = await tx.payment.create({
         data: {
           orderId: order.id,
-
           amountInCents: transactionTotal,
-
           status: 'PENDING',
         },
       });
@@ -245,13 +226,9 @@ export class OrdersService {
       const attempt = await tx.paymentAttempt.create({
         data: {
           paymentId: payment.id,
-
           provider: PaymentProvider.STRIPE,
-
           status: PaymentAttemptStatus.CREATED,
-
           amountInCents: transactionTotal,
-
           idempotencyKey: `order:${order.id}:payment:${payment.id}`,
         },
       });
@@ -274,9 +251,7 @@ export class OrdersService {
 
       return {
         order,
-
         payment,
-
         attempt,
       };
     });
@@ -288,15 +263,19 @@ export class OrdersService {
      */
     const payment = await this.paymentsService.initializePayment(
       result.order.id,
-
       result.payment.id,
-
       result.attempt.id,
     );
 
+    this.eventEmitter.emit(EVENTS.ORDER_CREATED, {
+      orderId: result.order.id,
+      userId,
+      orderNumber: result.order.orderNumber,
+      totalAmountInCents: result.order.totalAmountInCents,
+    });
+
     return {
       order: result.order,
-
       payment,
     };
   }
