@@ -47,6 +47,28 @@ enum InventoryAdjustmentType {
   MANUAL
 }
 
+enum PaymentProvider {
+  STRIPE
+  RAZORPAY
+  PAYPAL
+}
+
+enum PaymentAttemptStatus {
+  CREATED
+  PROCESSING
+  SUCCEEDED
+  FAILED
+  CANCELLED
+  REFUNDED
+}
+
+enum PaymentWebhookEventStatus {
+  RECEIVED
+  PROCESSING
+  PROCESSED
+  FAILED
+}
+
 model User {
   id           String   @id @default(auto()) @map("_id") @db.ObjectId
   email        String   @unique
@@ -121,15 +143,13 @@ model Product {
 model Cart {
   id String @id @default(auto()) @map("_id") @db.ObjectId
 
-  userId String @db.ObjectId
+  userId String @unique @db.ObjectId
   user   User   @relation(fields: [userId], references: [id])
 
   items CartItem[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
-
-  @@index([userId])
 }
 
 model CartItem {
@@ -239,8 +259,79 @@ model Payment {
   amountInCents Int
   status        PaymentStatus @default(PENDING)
 
+  attempts PaymentAttempt[]
+
   transactionId String? @unique
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  @@index([status])
+  @@index([createdAt])
+}
+
+model PaymentAttempt {
+  id String @id @default(auto()) @map("_id") @db.ObjectId
+
+  paymentId String  @db.ObjectId
+  payment   Payment @relation(fields: [paymentId], references: [id])
+
+  provider PaymentProvider
+
+  attemptNumber Int @default(1)
+
+  status PaymentAttemptStatus @default(CREATED)
+
+  amountInCents Int
+
+  providerPaymentId String?
+
+  idempotencyKey String @unique
+
+  lastWebhookEventId String?
+
+  failureCode    String?
+  failureMessage String?
+
+  metadata Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([paymentId])
+  @@index([provider])
+  @@index([status])
+  @@index([providerPaymentId])
+  @@index([provider, providerPaymentId])
+}
+
+model PaymentWebhookEvent {
+  id String @id @default(auto()) @map("_id") @db.ObjectId
+
+  provider PaymentProvider
+
+  eventId String @unique
+
+  eventType String
+
+  providerPaymentId String?
+
+  status PaymentWebhookEventStatus @default(RECEIVED)
+
+  payload Json?
+
+  errorMessage String?
+
+  processingStartedAt DateTime?
+
+  processedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([provider])
+  @@index([status])
+  @@index([providerPaymentId])
+  @@index([provider, providerPaymentId])
+  @@index([createdAt])
 }

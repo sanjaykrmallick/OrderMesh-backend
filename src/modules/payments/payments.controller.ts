@@ -1,49 +1,59 @@
-import { Body, Controller, Get, Param, Post, Req } from '@nestjs/common';
+import {
+  BadRequestException,
+  Controller,
+  Headers,
+  Param,
+  Post,
+  Req,
+} from '@nestjs/common';
 
-import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { Request } from 'express';
+
+import { Public } from '../../common/decorators/public.decorator';
 
 import { PaymentsService } from './payments.service';
-import { PaymentActionDto } from './dto/payment-action.dto';
 
-@ApiTags('Payments')
-@ApiBearerAuth('access-token')
 @Controller('payments')
 export class PaymentsController {
   constructor(private readonly paymentsService: PaymentsService) {}
 
-  @Get(':orderId')
-  @ApiOperation({
-    summary: 'Get payment for order',
-  })
-  getPayment(@Req() req: any, @Param('orderId') orderId: string) {
-    return this.paymentsService.getPayment(req.user.userId, orderId);
-  }
+  @Public()
+  @Post('webhook/stripe')
+  async stripeWebhook(
+    @Headers('stripe-signature')
+    signature: string,
 
-  @Post(':orderId/pay')
-  @ApiOperation({
-    summary: 'Process payment',
-  })
-  pay(
-    @Req() req: any,
-    @Param('orderId') orderId: string,
-    @Body() dto: PaymentActionDto,
+    @Req()
+    req: Request & {
+      rawBody?: Buffer;
+    },
   ) {
-    return this.paymentsService.pay(req.user.userId, orderId, dto);
-  }
+    if (!signature) {
+      throw new BadRequestException('Missing Stripe signature');
+    }
 
-  @Post(':orderId/fail')
-  @ApiOperation({
-    summary: 'Mark payment as failed',
-  })
-  fail(@Req() req: any, @Param('orderId') orderId: string) {
-    return this.paymentsService.fail(req.user.userId, orderId);
+    if (!req.rawBody) {
+      throw new BadRequestException('Raw request body is unavailable');
+    }
+
+    return this.paymentsService.handleStripeWebhook(
+      req.rawBody,
+
+      signature,
+    );
   }
 
   @Post(':orderId/refund')
-  @ApiOperation({
-    summary: 'Refund payment',
-  })
-  refund(@Req() req: any, @Param('orderId') orderId: string) {
-    return this.paymentsService.refund(req.user.userId, orderId);
+  async refund(
+    @Param('orderId')
+    orderId: string,
+
+    @Req() req: any,
+  ) {
+    return this.paymentsService.refund(
+      req.user.userId,
+
+      orderId,
+    );
   }
 }

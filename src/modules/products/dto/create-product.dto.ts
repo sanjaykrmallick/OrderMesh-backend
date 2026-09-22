@@ -18,7 +18,7 @@ export class CreateProductDto {
   @IsString()
   @MinLength(2)
   @MaxLength(100)
-  sku: string;
+  sku!: string;
 
   @ApiProperty({
     example: 'iPhone 17 Pro',
@@ -26,7 +26,7 @@ export class CreateProductDto {
   @IsString()
   @MinLength(2)
   @MaxLength(200)
-  name: string;
+  name!: string;
 
   @ApiProperty({
     example: 'iphone-17-pro',
@@ -34,7 +34,7 @@ export class CreateProductDto {
   @IsString()
   @MinLength(2)
   @MaxLength(200)
-  slug: string;
+  slug!: string;
 
   @ApiPropertyOptional({
     example: 'Latest Apple flagship smartphone',
@@ -52,7 +52,7 @@ export class CreateProductDto {
   @IsInt()
   @Min(0)
   @Max(2147483647)
-  priceInCents: number;
+  priceInCents!: number;
 
   @ApiPropertyOptional({
     example: 'https://cdn.example.com/products/iphone.jpg',
@@ -66,5 +66,5 @@ export class CreateProductDto {
     example: '66a123456789abcdef123456',
   })
   @IsString()
-  categoryId: string;
+  categoryId!: string;
 }

@@ -4,236 +4,632 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 
-import { OrderStatus, PaymentStatus } from '@prisma/client';
+import {
+  OrderStatus,
+  PaymentAttemptStatus,
+  PaymentProvider,
+  PaymentStatus,
+  Prisma,
+} from '@prisma/client';
 
 import { PrismaService } from '../../database/prisma.service';
+
 import { InventoryService } from '../inventory/inventory.service';
 
-import { PaymentActionDto } from './dto/payment-action.dto';
+import { StripeGateway } from './gateways/stripe.gateway';
+import {
+  PaymentGateway,
+  PaymentWebhookResult,
+} from './gateways/payment-gateway.interface';
+import { PaymentWebhookEventService } from './webhooks/payment-webhook-event.service';
 
 @Injectable()
 export class PaymentsService {
   constructor(
     private readonly prisma: PrismaService,
+
     private readonly inventoryService: InventoryService,
+
+    private readonly stripeGateway: StripeGateway,
+
+    private readonly webhookEventService: PaymentWebhookEventService,
   ) {}
 
-  async getPayment(userId: string, orderId: string) {
-    const order = await this.prisma.order.findFirst({
-      where: {
-        id: orderId,
-        userId,
-      },
+  /**
+   * Select payment provider.
+   *
+   * STRIPE
+   * RAZORPAY
+   * PAYPAL
+   */
+  private getGateway(provider: PaymentProvider): PaymentGateway {
+    switch (provider) {
+      case PaymentProvider.STRIPE:
+        return this.stripeGateway;
 
-      include: {
-        payment: true,
-      },
-    });
-
-    if (!order) {
-      throw new NotFoundException('Order not found');
-    }
-
-    if (!order.payment) {
-      throw new NotFoundException('Payment not found');
-    }
-
-    return order.payment;
-  }
-
-  async pay(userId: string, orderId: string, dto: PaymentActionDto) {
-    const order = await this.prisma.order.findFirst({
-      where: {
-        id: orderId,
-        userId,
-      },
-
-      include: {
-        payment: true,
-        items: true,
-      },
-    });
-
-    if (!order) {
-      throw new NotFoundException('Order not found');
-    }
-
-    if (!order.payment) {
-      throw new NotFoundException('Payment not found');
-    }
-
-    if (order.payment.status === PaymentStatus.SUCCESS) {
-      return {
-        message: 'Payment already successful',
-        payment: order.payment,
-      };
-    }
-
-    if (order.status !== OrderStatus.PAYMENT_PENDING) {
-      throw new ConflictException('Order is not awaiting payment');
-    }
-
-    /*
-     * In production, this is where we call
-     * Stripe/Razorpay/etc.
-     *
-     * For now we simulate success.
-     */
-    const transactionId =
-      dto.transactionId ||
-      `TXN-${Date.now()}-${Math.random()
-        .toString(36)
-        .substring(2, 8)
-        .toUpperCase()}`;
-
-    const result = await this.prisma.$transaction(async (tx) => {
-      const payment = await tx.payment.update({
-        where: {
-          orderId,
-        },
-
-        data: {
-          status: PaymentStatus.SUCCESS,
-
-          transactionId,
-        },
-      });
-
-      const updatedOrder = await tx.order.update({
-        where: {
-          id: orderId,
-        },
-
-        data: {
-          status: OrderStatus.PAID,
-        },
-      });
-
-      return {
-        payment,
-        order: updatedOrder,
-      };
-    });
-
-    return result;
-  }
-
-  async fail(userId: string, orderId: string) {
-    const order = await this.prisma.order.findFirst({
-      where: {
-        id: orderId,
-        userId,
-      },
-
-      include: {
-        payment: true,
-        items: true,
-      },
-    });
-
-    if (!order) {
-      throw new NotFoundException('Order not found');
-    }
-
-    if (!order.payment) {
-      throw new NotFoundException('Payment not found');
-    }
-
-    if (order.payment.status === PaymentStatus.SUCCESS) {
-      throw new ConflictException(
-        'Successful payment cannot be marked as failed',
-      );
-    }
-
-    /*
-     * Payment failed.
-     *
-     * Release all reserved inventory.
-     *
-     * Do this in the SAME transaction as
-     * payment/order status changes.
-     */
-    await this.prisma.$transaction(async (tx) => {
-      for (const item of order.items) {
-        await this.inventoryService.releaseWithinTransaction(
-          tx,
-          item.productId,
-          item.quantity,
+      default:
+        throw new ConflictException(
+          `Payment provider ${provider} is not supported`,
         );
-      }
+    }
+  }
 
-      await tx.payment.update({
-        where: {
-          orderId,
-        },
+  /**
+   * Create provider-side payment.
+   */
+  async initializePayment(
+    orderId: string,
 
-        data: {
-          status: PaymentStatus.FAILED,
-        },
-      });
+    paymentId: string,
 
-      await tx.order.update({
-        where: {
-          id: orderId,
-        },
+    attemptId: string,
+  ) {
+    const attempt = await this.prisma.paymentAttempt.findUnique({
+      where: {
+        id: attemptId,
+      },
 
-        data: {
-          status: OrderStatus.CANCELLED,
+      include: {
+        payment: {
+          include: {
+            order: {
+              include: {
+                user: true,
+              },
+            },
+          },
         },
-      });
+      },
+    });
+
+    if (!attempt) {
+      throw new NotFoundException('Payment attempt not found');
+    }
+
+    if (attempt.payment.orderId !== orderId) {
+      throw new ConflictException('Payment does not belong to order');
+    }
+
+    /**
+     * Already initialized.
+     */
+    if (attempt.providerPaymentId) {
+      return {
+        paymentAttemptId: attempt.id,
+
+        provider: attempt.provider,
+
+        providerPaymentId: attempt.providerPaymentId,
+
+        clientSecret: this.getClientSecretFromMetadata(attempt.metadata),
+
+        status: attempt.status,
+      };
+    }
+
+    const gateway = this.getGateway(attempt.provider);
+
+    const result = await gateway.createPayment({
+      amountInCents: attempt.amountInCents,
+
+      currency: process.env.STRIPE_CURRENCY ?? 'inr',
+
+      orderId,
+
+      paymentId,
+
+      attemptId,
+
+      customerEmail: attempt.payment.order.user.email,
+
+      idempotencyKey: attempt.idempotencyKey,
+
+      metadata: {
+        orderId,
+
+        paymentId,
+
+        attemptId,
+      },
+    });
+
+    /**
+     * Save provider payment ID and
+     * client secret.
+     */
+    const updatedAttempt = await this.prisma.paymentAttempt.update({
+      where: {
+        id: attempt.id,
+      },
+
+      data: {
+        providerPaymentId: result.providerPaymentId,
+
+        status:
+          result.status === 'SUCCEEDED'
+            ? PaymentAttemptStatus.SUCCEEDED
+            : result.status === 'PROCESSING'
+              ? PaymentAttemptStatus.PROCESSING
+              : PaymentAttemptStatus.CREATED,
+
+        metadata: {
+          clientSecret: result.clientSecret ?? null,
+        },
+      },
     });
 
     return {
-      message: 'Payment failed and inventory released',
-      orderId,
+      paymentAttemptId: updatedAttempt.id,
+
+      provider: updatedAttempt.provider,
+
+      providerPaymentId: updatedAttempt.providerPaymentId,
+
+      clientSecret: result.clientSecret,
+
+      status: updatedAttempt.status,
     };
   }
 
-  async refund(userId: string, orderId: string) {
-    const order = await this.prisma.order.findFirst({
+  /**
+   * Stripe webhook.
+   */
+  async handleStripeWebhook(
+    payload: Buffer,
+
+    signature: string,
+  ) {
+    const result = await this.stripeGateway.parseWebhook(
+      payload,
+
+      signature,
+    );
+
+    const webhookEvent = await this.webhookEventService.createIfNotExists({
+      provider: PaymentProvider.STRIPE,
+
+      eventId: result.eventId,
+
+      eventType: result.eventType,
+
+      providerPaymentId: result.providerPaymentId,
+
+      payload: result.raw as Prisma.InputJsonValue,
+    });
+
+    if (webhookEvent.event && webhookEvent.event.status === 'PROCESSED') {
+      return {
+        received: true,
+
+        duplicate: true,
+
+        status: 'already_processed',
+      };
+    }
+
+    if (webhookEvent.event && webhookEvent.event.status === 'PROCESSING') {
+      return {
+        received: true,
+
+        duplicate: true,
+
+        status: 'processing',
+      };
+    }
+
+    const claimed = await this.webhookEventService.claimEvent(result.eventId);
+
+    if (!claimed) {
+      return {
+        received: true,
+
+        duplicate: true,
+
+        status: 'already_claimed',
+      };
+    }
+
+    try {
+      const response = await this.processWebhook(
+        PaymentProvider.STRIPE,
+
+        result,
+      );
+
+      await this.webhookEventService.markProcessed(result.eventId);
+
+      return response;
+    } catch (error) {
+      await this.webhookEventService.markFailed(
+        result.eventId,
+
+        error,
+      );
+
+      throw error;
+    }
+  }
+
+  /**
+   * Provider-independent webhook processing.
+   */
+  private async processWebhook(
+    provider: PaymentProvider,
+
+    result: PaymentWebhookResult,
+  ) {
+    return this.prisma.$transaction(async (tx) => {
+      /**
+       * Find payment attempt.
+       */
+      const attempt = await tx.paymentAttempt.findFirst({
+        where: {
+          provider,
+
+          providerPaymentId: result.providerPaymentId,
+        },
+
+        include: {
+          payment: {
+            include: {
+              order: {
+                include: {
+                  items: true,
+                },
+              },
+            },
+          },
+        },
+      });
+
+      if (!attempt) {
+        throw new NotFoundException('Payment attempt not found');
+      }
+
+      if (attempt.status === PaymentAttemptStatus.SUCCEEDED) {
+        return {
+          received: true,
+
+          alreadyProcessed: true,
+        };
+      }
+
+      /**
+       * =====================================
+       * PROCESSING
+       * =====================================
+       */
+      if (result.status === 'PROCESSING') {
+        const updateResult = await tx.paymentAttempt.updateMany({
+          where: {
+            id: attempt.id,
+
+            status: {
+              in: [
+                PaymentAttemptStatus.CREATED,
+
+                PaymentAttemptStatus.PROCESSING,
+              ],
+            },
+          },
+
+          data: {
+            status: PaymentAttemptStatus.PROCESSING,
+
+            lastWebhookEventId: result.eventId,
+          },
+        });
+
+        if (updateResult.count === 0) {
+          return {
+            received: true,
+
+            concurrentUpdate: true,
+          };
+        }
+
+        return {
+          received: true,
+
+          status: 'PROCESSING',
+        };
+      }
+
+      /**
+       * =====================================
+       * SUCCESS
+       * =====================================
+       */
+      if (result.status === 'SUCCEEDED') {
+        const updateResult = await tx.paymentAttempt.updateMany({
+          where: {
+            id: attempt.id,
+
+            status: {
+              in: [
+                PaymentAttemptStatus.CREATED,
+
+                PaymentAttemptStatus.PROCESSING,
+              ],
+            },
+          },
+
+          data: {
+            status: PaymentAttemptStatus.SUCCEEDED,
+
+            lastWebhookEventId: result.eventId,
+          },
+        });
+
+        if (updateResult.count === 0) {
+          return {
+            received: true,
+
+            concurrentUpdate: true,
+          };
+        }
+
+        await tx.payment.update({
+          where: {
+            id: attempt.paymentId,
+          },
+
+          data: {
+            status: PaymentStatus.SUCCESS,
+          },
+        });
+
+        await tx.order.update({
+          where: {
+            id: attempt.payment.orderId,
+          },
+
+          data: {
+            status: OrderStatus.PAID,
+          },
+        });
+
+        return {
+          received: true,
+
+          status: 'SUCCESS',
+        };
+      }
+
+      /**
+       * =====================================
+       * FAILED
+       * =====================================
+       */
+      if (result.status === 'FAILED') {
+        const updateResult = await tx.paymentAttempt.updateMany({
+          where: {
+            id: attempt.id,
+
+            status: {
+              in: [
+                PaymentAttemptStatus.CREATED,
+
+                PaymentAttemptStatus.PROCESSING,
+              ],
+            },
+          },
+
+          data: {
+            status: PaymentAttemptStatus.FAILED,
+
+            lastWebhookEventId: result.eventId,
+
+            failureCode: result.failureCode,
+
+            failureMessage: result.failureMessage,
+          },
+        });
+
+        if (updateResult.count === 0) {
+          return {
+            received: true,
+
+            concurrentUpdate: true,
+          };
+        }
+
+        for (const item of attempt.payment.order.items) {
+          await this.inventoryService.releaseWithinTransaction(
+            tx,
+
+            item.productId,
+
+            item.quantity,
+          );
+        }
+
+        await tx.payment.update({
+          where: {
+            id: attempt.paymentId,
+          },
+
+          data: {
+            status: PaymentStatus.FAILED,
+          },
+        });
+
+        await tx.order.update({
+          where: {
+            id: attempt.payment.orderId,
+          },
+
+          data: {
+            status: OrderStatus.CANCELLED,
+          },
+        });
+
+        return {
+          received: true,
+
+          status: 'FAILED',
+        };
+      }
+
+      /**
+       * =====================================
+       * CANCELLED
+       * =====================================
+       */
+      if (result.status === 'CANCELLED') {
+        const updateResult = await tx.paymentAttempt.updateMany({
+          where: {
+            id: attempt.id,
+
+            status: {
+              in: [
+                PaymentAttemptStatus.CREATED,
+
+                PaymentAttemptStatus.PROCESSING,
+              ],
+            },
+          },
+
+          data: {
+            status: PaymentAttemptStatus.CANCELLED,
+
+            lastWebhookEventId: result.eventId,
+          },
+        });
+
+        if (updateResult.count === 0) {
+          return {
+            received: true,
+
+            concurrentUpdate: true,
+          };
+        }
+
+        /**
+         * Release inventory.
+         */
+        for (const item of attempt.payment.order.items) {
+          await this.inventoryService.releaseWithinTransaction(
+            tx,
+
+            item.productId,
+
+            item.quantity,
+          );
+        }
+
+        await tx.payment.update({
+          where: {
+            id: attempt.paymentId,
+          },
+
+          data: {
+            status: PaymentStatus.FAILED,
+          },
+        });
+
+        await tx.order.update({
+          where: {
+            id: attempt.payment.orderId,
+          },
+
+          data: {
+            status: OrderStatus.CANCELLED,
+          },
+        });
+
+        return {
+          received: true,
+
+          status: 'CANCELLED',
+        };
+      }
+
+      return {
+        received: true,
+
+        ignored: true,
+      };
+    });
+  }
+
+  /**
+   * Refund successful payment.
+   */
+  async refund(
+    userId: string,
+
+    orderId: string,
+  ) {
+    const payment = await this.prisma.payment.findFirst({
       where: {
-        id: orderId,
-        userId,
+        order: {
+          id: orderId,
+
+          userId,
+        },
       },
 
       include: {
-        payment: true,
-        items: true,
+        order: true,
+
+        attempts: {
+          where: {
+            status: PaymentAttemptStatus.SUCCEEDED,
+          },
+
+          orderBy: {
+            createdAt: 'desc',
+          },
+
+          take: 1,
+        },
       },
     });
 
-    if (!order) {
-      throw new NotFoundException('Order not found');
-    }
-
-    if (!order.payment) {
+    if (!payment) {
       throw new NotFoundException('Payment not found');
     }
 
-    if (order.payment.status !== PaymentStatus.SUCCESS) {
-      throw new ConflictException('Only successful payments can be refunded');
+    if (payment.status !== PaymentStatus.SUCCESS) {
+      throw new ConflictException('Payment is not successful');
     }
 
+    const attempt = payment.attempts[0];
+
+    if (!attempt?.providerPaymentId) {
+      throw new ConflictException('Provider payment ID not found');
+    }
+
+    const gateway = this.getGateway(attempt.provider);
+
+    await gateway.refund(
+      attempt.providerPaymentId,
+
+      payment.amountInCents,
+    );
+
+    /**
+     * We update local state only after
+     * provider accepts the refund.
+     *
+     * In production, you can also make
+     * refund webhook the final source of truth.
+     */
     await this.prisma.$transaction(async (tx) => {
-      /*
-       * At this point the order has already
-       * been paid.
-       *
-       * For a simple cancellation/refund
-       * before fulfillment, return the
-       * reserved stock.
-       */
-      for (const item of order.items) {
-        await this.inventoryService.releaseWithinTransaction(
-          tx,
-          item.productId,
-          item.quantity,
-        );
-      }
+      await tx.paymentAttempt.update({
+        where: {
+          id: attempt.id,
+        },
+
+        data: {
+          status: PaymentAttemptStatus.REFUNDED,
+        },
+      });
 
       await tx.payment.update({
         where: {
-          orderId,
+          id: payment.id,
         },
 
         data: {
@@ -253,8 +649,21 @@ export class PaymentsService {
     });
 
     return {
-      message: 'Payment refunded successfully',
+      message: 'Refund initiated successfully',
+
       orderId,
     };
+  }
+
+  private getClientSecretFromMetadata(
+    metadata: Prisma.JsonValue | null,
+  ): string | undefined {
+    if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) {
+      return undefined;
+    }
+
+    const value = (metadata as Record<string, unknown>).clientSecret;
+
+    return typeof value === 'string' ? value : undefined;
   }
 }

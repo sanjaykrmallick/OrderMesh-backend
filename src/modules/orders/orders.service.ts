@@ -5,24 +5,40 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 
-import { OrderStatus, Prisma } from '@prisma/client';
+import {
+  OrderStatus,
+  PaymentAttemptStatus,
+  PaymentProvider,
+  Prisma,
+} from '@prisma/client';
 
 import { PrismaService } from '../../database/prisma.service';
+
 import { InventoryService } from '../inventory/inventory.service';
 
+import { PaymentsService } from '../payments/payments.service';
+
 import { CheckoutDto } from './dto/checkout.dto';
+
 import { OrdersQueryDto } from './dto/orders-query.dto';
 
 @Injectable()
 export class OrdersService {
   constructor(
     private readonly prisma: PrismaService,
+
     private readonly inventoryService: InventoryService,
+
+    private readonly paymentsService: PaymentsService,
   ) {}
 
-  async checkout(userId: string, dto: CheckoutDto) {
-    /*
-     * Get user's cart.
+  async checkout(
+    userId: string,
+
+    dto: CheckoutDto,
+  ) {
+    /**
+     * Find cart first.
      */
     const cart = await this.prisma.cart.findFirst({
       where: {
@@ -46,9 +62,8 @@ export class OrdersService {
       throw new BadRequestException('Cart is empty');
     }
 
-    /*
-     * Validate every cart item BEFORE
-     * creating the order.
+    /**
+     * Validate cart.
      */
     for (const item of cart.items) {
       if (!item.product.isActive) {
@@ -68,11 +83,12 @@ export class OrdersService {
       }
     }
 
-    /*
-     * Calculate total using snapshot prices.
+    /**
+     * Calculate amount from DB price.
      */
     const totalAmountInCents = cart.items.reduce(
       (sum, item) => sum + item.quantity * item.product.priceInCents,
+
       0,
     );
 
@@ -80,45 +96,113 @@ export class OrdersService {
       throw new BadRequestException('Invalid order amount');
     }
 
-    /*
-     * Generate unique order number.
-     */
     const orderNumber = this.generateOrderNumber();
 
-    /*
+    /**
      * IMPORTANT:
      *
-     * We reserve inventory and create the
-     * order in one MongoDB transaction.
+     * No Stripe call here.
      *
-     * If any reservation fails, the entire
-     * transaction rolls back.
+     * This transaction only touches MongoDB.
      */
-    const order = await this.prisma.$transaction(async (tx) => {
-      // 1. Reserve inventory
-      for (const item of cart.items) {
+    const result = await this.prisma.$transaction(async (tx) => {
+      /**
+       * Re-read cart inside transaction.
+       *
+       * This protects against a cart being
+       * changed between the initial read
+       * and transaction.
+       */
+      const currentCart = await tx.cart.findUnique({
+        where: {
+          id: cart.id,
+        },
+
+        include: {
+          items: {
+            include: {
+              product: {
+                include: {
+                  inventory: true,
+                },
+              },
+            },
+          },
+        },
+      });
+
+      if (!currentCart || currentCart.items.length === 0) {
+        throw new BadRequestException('Cart is empty');
+      }
+
+      /**
+       * Validate again inside transaction.
+       */
+      for (const item of currentCart.items) {
+        if (!item.product.isActive) {
+          throw new ConflictException(
+            `Product ${item.product.name} is inactive`,
+          );
+        }
+
+        if (!item.product.inventory) {
+          throw new ConflictException(
+            `Inventory unavailable for ${item.product.name}`,
+          );
+        }
+
+        /**
+         * This check is useful for a
+         * better error message.
+         *
+         * The actual atomic protection
+         * happens in reserveWithinTransaction().
+         */
+        if (item.product.inventory.availableQuantity < item.quantity) {
+          throw new ConflictException(
+            `Insufficient inventory for ${item.product.name}`,
+          );
+        }
+      }
+
+      const transactionTotal = currentCart.items.reduce(
+        (sum, item) => sum + item.quantity * item.product.priceInCents,
+
+        0,
+      );
+
+      /**
+       * Reserve inventory.
+       *
+       * Atomic conditional update.
+       */
+      for (const item of currentCart.items) {
         await this.inventoryService.reserveWithinTransaction(
           tx,
+
           item.productId,
+
           item.quantity,
         );
       }
 
-      // 2. Create order
-      const createdOrder = await tx.order.create({
+      /**
+       * Create Order.
+       */
+      const order = await tx.order.create({
         data: {
           orderNumber,
 
           userId,
 
-          totalAmountInCents,
+          totalAmountInCents: transactionTotal,
 
           status: OrderStatus.PAYMENT_PENDING,
 
           shippingAddress: dto.shippingAddress,
 
           items: {
-            create: cart.items.map((item) => ({
+            create: currentCart.items.map((item) => ({
               productId: item.productId,
 
               productName: item.product.name,
@@ -132,37 +216,98 @@ export class OrdersService {
               totalPriceInCents: item.quantity * item.product.priceInCents,
             })),
           },
-
-          payment: {
-            create: {
-              amountInCents: totalAmountInCents,
-
-              status: 'PENDING',
-            },
-          },
         },
 
         include: {
           items: true,
-          payment: true,
         },
       });
 
-      // 3. Clear cart
+      /**
+       * Create Payment.
+       */
+      const payment = await tx.payment.create({
+        data: {
+          orderId: order.id,
+
+          amountInCents: transactionTotal,
+
+          status: 'PENDING',
+        },
+      });
+
+      /**
+       * Create PaymentAttempt.
+       *
+       * This gives us an idempotency key
+       * before calling Stripe.
+       */
+      const attempt = await tx.paymentAttempt.create({
+        data: {
+          paymentId: payment.id,
+
+          provider: PaymentProvider.STRIPE,
+
+          status: PaymentAttemptStatus.CREATED,
+
+          amountInCents: transactionTotal,
+
+          idempotencyKey: `order:${order.id}:payment:${payment.id}`,
+        },
+      });
+
+      /**
+       * IMPORTANT:
+       *
+       * Delete only the cart items that
+       * participated in this checkout.
+       *
+       * Don't blindly delete all cart items.
+       */
       await tx.cartItem.deleteMany({
         where: {
-          cartId: cart.id,
+          id: {
+            in: currentCart.items.map((item) => item.id),
+          },
         },
       });
 
-      return createdOrder;
+      return {
+        order,
+
+        payment,
+
+        attempt,
+      };
     });
 
-    return order;
+    /**
+     * Mongo transaction has committed.
+     *
+     * NOW call Stripe.
+     */
+    const payment = await this.paymentsService.initializePayment(
+      result.order.id,
+
+      result.payment.id,
+
+      result.attempt.id,
+    );
+
+    return {
+      order: result.order,
+
+      payment,
+    };
   }
 
-  async findMyOrders(userId: string, query: OrdersQueryDto) {
+  async findMyOrders(
+    userId: string,
+
+    query: OrdersQueryDto,
+  ) {
     const page = query.page ?? 1;
+
     const limit = query.limit ?? 20;
 
     const skip = (page - 1) * limit;
@@ -180,6 +325,7 @@ export class OrdersService {
         where,
 
         skip,
+
         take: limit,
 
         orderBy: {
@@ -188,7 +334,12 @@ export class OrdersService {
 
         include: {
           items: true,
-          payment: true,
+
+          payment: {
+            include: {
+              attempts: true,
+            },
+          },
         },
       }),
 
@@ -202,19 +353,29 @@ export class OrdersService {
 
       meta: {
         page,
+
         limit,
+
         total,
+
         totalPages: Math.ceil(total / limit),
+
         hasNextPage: page * limit < total,
+
         hasPreviousPage: page > 1,
       },
     };
   }
 
-  async findOne(userId: string, orderId: string) {
+  async findOne(
+    userId: string,
+
+    orderId: string,
+  ) {
     const order = await this.prisma.order.findFirst({
       where: {
         id: orderId,
+
         userId,
       },
 
@@ -224,15 +385,22 @@ export class OrdersService {
             product: {
               select: {
                 id: true,
+
                 name: true,
+
                 sku: true,
+
                 imageUrl: true,
               },
             },
           },
         },
 
-        payment: true,
+        payment: {
+          include: {
+            attempts: true,
+          },
+        },
       },
     });
 
@@ -243,15 +411,21 @@ export class OrdersService {
     return order;
   }
 
-  async cancel(userId: string, orderId: string) {
+  async cancel(
+    userId: string,
+
+    orderId: string,
+  ) {
     const order = await this.prisma.order.findFirst({
       where: {
         id: orderId,
+
         userId,
       },
 
       include: {
         items: true,
+
         payment: true,
       },
     });
@@ -260,12 +434,9 @@ export class OrdersService {
       throw new NotFoundException('Order not found');
     }
 
-    /*
-     * Only unpaid orders can be cancelled
-     * through this endpoint.
-     */
     const cancellableStatuses: OrderStatus[] = [
       OrderStatus.PENDING,
+
       OrderStatus.PAYMENT_PENDING,
     ];
 
@@ -274,37 +445,63 @@ export class OrdersService {
     }
 
     await this.prisma.$transaction(async (tx) => {
-      for (const item of order.items) {
-        await this.inventoryService.releaseWithinTransaction(
-          tx,
-          item.productId,
-          item.quantity,
-        );
-      }
-
-      await tx.order.update({
+      /**
+       * Atomic status transition.
+       *
+       * This prevents two concurrent cancel
+       * requests from both releasing stock.
+       */
+      const updated = await tx.order.updateMany({
         where: {
           id: order.id,
+
+          userId,
+
+          status: {
+            in: [OrderStatus.PENDING, OrderStatus.PAYMENT_PENDING],
+          },
         },
 
         data: {
           status: OrderStatus.CANCELLED,
         },
       });
+
+      if (updated.count === 0) {
+        throw new ConflictException(
+          'Order was already cancelled or payment has progressed',
+        );
+      }
+
+      /**
+       * Release inventory exactly once.
+       */
+      for (const item of order.items) {
+        await this.inventoryService.releaseWithinTransaction(
+          tx,
+
+          item.productId,
+
+          item.quantity,
+        );
+      }
+
+      /**
+       * Payment can remain PENDING/FAILED
+       * depending on the exact payment flow.
+       *
+       * We don't mark it SUCCESS/REFUND here.
+       */
     });
 
     return {
       message: 'Order cancelled successfully',
+
       orderId,
     };
   }
 
   private generateOrderNumber() {
-    /*
-     * Example:
-     *
-     * ORD-20260921-AB12CD
-     */
     const random = Math.random().toString(36).substring(2, 8).toUpperCase();
 
     const date = new Date().toISOString().slice(0, 10).replace(/-/g, '');

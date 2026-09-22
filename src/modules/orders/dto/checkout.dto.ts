@@ -16,7 +16,7 @@ export class CheckoutDto {
     },
   })
   @IsObject()
-  shippingAddress: Record<string, any>;
+  shippingAddress!: Record<string, any>;
 
   @ApiPropertyOptional({
     example: 'Please deliver after 6 PM',

@@ -67,6 +67,18 @@ order-fulfillment-platform/
 │ │ └── dto/
 │ │
 │ ├── payments/
+| │ ├── gateways/
+│ │ │ ├── payment-gateway.interface.ts
+│ │ │ ├── stripe.gateway.ts
+│ │ │ ├── razorpay.gateway.ts
+│ │ │ └── paypal.gateway.ts
+│ │ │
+| │ ├── webhooks/
+| │ │ ├── payment-webhook-event.service.ts
+| │ │ ├── stripe-webhook.service.ts
+| │ │ ├── razorpay-webhook.service.ts
+| │ │ └── paypal-webhook.service.ts
+│ │ │
 │ │ ├── payments.module.ts
 │ │ ├── payments.controller.ts
 │ │ └── payments.service.ts
@@ -118,3 +130,116 @@ GET Inventory-------❌-------✅-----------✅-------✅
 Adjust Inventory----❌-------✅-----------✅-------✅
 Reserve Inventory---❌-------❌-----------✅-------✅
 Release Inventory---❌-------❌-----------✅-------✅
+
+# Target payment flow :-
+
+Customer
+│
+│ POST /orders/checkout
+▼
+OrderService
+│
+├── Mongo Transaction
+│ ├── Reserve inventory
+│ ├── Create Order
+│ ├── Create PaymentAttempt
+│ └── Clear Cart
+│
+▼
+PaymentService
+│
+│ createPayment()
+▼
+StripeGateway
+│
+│ PaymentIntent
+▼
+Stripe
+│
+│ client_secret
+▼
+Frontend
+│
+│ Stripe.js confirms payment
+▼
+Stripe
+│
+│ webhook
+▼
+POST /api/payments/webhook/stripe
+│
+▼
+PaymentService
+│
+├── Verify signature
+├── Check idempotency
+├── Atomic state transition
+├── Update PaymentAttempt
+└── Update Order
+
+# Payment Webhook Event
+
+Stripe
+│
+│ webhook event
+▼
+POST /api/payments/webhook/stripe
+│
+▼
+Verify Stripe signature
+│
+▼
+PaymentWebhookEvent
+│
+├── already PROCESSED → return 200
+│
+├── PROCESSING → ignore duplicate
+│
+└── RECEIVED/FAILED → claim event
+│
+▼
+Mongo Transaction
+│
+├── PaymentAttempt state transition
+├── Payment update
+├── Order update
+└── Inventory release if required
+│
+▼
+Mark WebhookEvent = PROCESSED
+
+#
+
+# Stripe Webhook
+
+Stripe
+│
+▼
+POST /api/payments/webhook/stripe
+│
+▼
+Verify signature
+│
+▼
+PaymentWebhookEvent.create()
+│
+├── duplicate → existing event
+│
+▼
+claimEvent()
+│
+├── another worker owns it → return 200
+│
+▼
+processWebhook()
+│
+▼
+Mongo Transaction
+│
+├── PaymentAttempt
+├── Payment
+├── Order
+└── Inventory
+│
+▼
+markProcessed()

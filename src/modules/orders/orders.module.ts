@@ -4,9 +4,10 @@ import { OrdersController } from './orders.controller';
 import { OrdersService } from './orders.service';
 
 import { InventoryModule } from '../inventory/inventory.module';
+import { PaymentsModule } from '../payments/payments.module';
 
 @Module({
-  imports: [InventoryModule],
+  imports: [InventoryModule, PaymentsModule],
 
   controllers: [OrdersController],
 
